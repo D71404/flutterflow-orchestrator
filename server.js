@@ -7,8 +7,6 @@ import { promisify } from 'util';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import readline from 'readline';
-
 const execAsync = promisify(exec);
 
 // Get __dirname equivalent in ES modules
@@ -456,109 +454,154 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     // Step 4: Run Claude CLI with streaming output
     await logToSupabase(projectId, 'Starting Claude Code translation...', 'info');
 
-    const claudePrompt = 'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Do not ask for confirmation.';
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        'ANTHROPIC_API_KEY is not set on the orchestrator process. ' +
+          'Set it in Railway service variables before running generate-mobile.'
+      );
+    }
 
-    await new Promise(async (resolve, reject) => {
-      // Build the full command as a single string for shell: true
-      // Use -p with quoted prompt directly as argument (no pipe needed)
-      // --dangerously-skip-permissions must come AFTER the prompt to avoid being hijacked
-      // --verbose for debug output
-      const claudeCommand = `claude -p "Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Output the raw Flutter/Dart code into a lib folder. Do not ask for confirmation." --dangerously-skip-permissions --verbose`;
+    const claudeHome = `/tmp/claude-home/${projectId}`;
+    await fs.mkdir(claudeHome, { recursive: true });
+    try {
+      await execAsync(`chown -R 1000:1000 "${claudeHome}"`);
+    } catch (chownError) {
+      await logToSupabase(projectId, `Warning: Could not change claude-home ownership: ${chownError.message}`, 'warning');
+    }
 
-      await logToSupabase(projectId, `Executing command: ${claudeCommand}`, 'info');
+    const claudePrompt =
+      'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. ' +
+      'Output raw Flutter/Dart code into a lib/ folder. Do not ask for confirmation.';
 
-      // Use spawn with shell mode enabled
-      const childProcess = spawn(claudeCommand, [], {
+    const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000; // 45 minutes
+
+    const claudeArgs = [
+      '--bare',
+      '-p',
+      claudePrompt,
+      '--dangerously-skip-permissions',
+      '--permission-mode',
+      'acceptEdits',
+      '--allowedTools',
+      'Read,Edit,Bash,Glob,Grep',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+    ];
+
+    const commandPreview = claudeArgs
+      .map((arg) => (/\s/.test(arg) ? JSON.stringify(arg) : arg))
+      .join(' ');
+    await logToSupabase(projectId, `Executing: claude ${commandPreview}`, 'info');
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutId;
+
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        activeProcesses.delete(projectId);
+        fn(value);
+      };
+
+      const flushChunk = async (chunk, level) => {
+        const text = chunk.toString('utf8');
+        if (!text.trim()) return;
+
+        // Split on newlines and carriage returns so \r progress spinners are captured
+        const segments = text.split(/\r\n|\n|\r/);
+        for (const segment of segments) {
+          if (segment.trim()) {
+            const line = level === 'warning' ? `[stderr] ${segment}` : segment;
+            await logToSupabase(projectId, line, level);
+          }
+        }
+      };
+
+      const childProcess = spawn('claude', claudeArgs, {
         cwd: workspacePath,
         uid: 1000,
         gid: 1000,
-        shell: '/bin/bash',
-        stdio: ['ignore', 'pipe', 'pipe'], // Close stdin since prompt is in command args
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: {
           ...process.env,
-          HOME: workspacePath, // Override HOME to avoid /root/.bashrc permission issues
+          HOME: claudeHome,
+          ANTHROPIC_API_KEY: apiKey,
           FLUTTERFLOW_PROJECT: flutterflowId,
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-          CI: 'true', // Force headless CI mode
-          FORCE_COLOR: '0', // Disable ANSI color codes
-          NO_COLOR: '1', // Another way to disable colors
-          TERM: 'dumb', // Prevent interactive terminal features
-          DEBIAN_FRONTEND: 'noninteractive', // Prevent apt prompts
-          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' // Ensure PATH is set
-        }
+          CI: 'true',
+          FORCE_COLOR: '0',
+          NO_COLOR: '1',
+          TERM: 'dumb',
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+        },
       });
 
-      // Log that process was spawned
-      await logToSupabase(projectId, `Process spawned with PID: ${childProcess.pid}`, 'info');
-
-      // Store process in registry for potential cancellation
       activeProcesses.set(projectId, childProcess);
 
-      // Check if process spawned successfully
       if (!childProcess.pid) {
-        await logToSupabase(projectId, 'Failed to spawn Claude process - no PID assigned', 'error');
-        reject(new Error('Failed to spawn Claude process'));
+        finish(reject, new Error('Failed to spawn Claude process - no PID assigned'));
         return;
       }
 
-      // Use readline for line-buffered stdout streaming
-      const stdoutInterface = readline.createInterface({
-        input: childProcess.stdout,
-        crlfDelay: Infinity
+      timeoutId = setTimeout(() => {
+        childProcess.kill('SIGTERM');
+        finish(reject, new Error(`Claude timed out after ${CLAUDE_TIMEOUT_MS / 60000} minutes`));
+      }, CLAUDE_TIMEOUT_MS);
+
+      childProcess.stdout.on('data', (chunk) => {
+        flushChunk(chunk, 'info').catch((err) => {
+          console.error(`Failed to log Claude stdout for project ${projectId}:`, err);
+        });
       });
 
-      stdoutInterface.on('line', async (line) => {
-        if (line.trim()) {
-          await logToSupabase(projectId, line, 'info');
-        }
+      childProcess.stderr.on('data', (chunk) => {
+        flushChunk(chunk, 'warning').catch((err) => {
+          console.error(`Failed to log Claude stderr for project ${projectId}:`, err);
+        });
       });
 
-      // Use readline for line-buffered stderr streaming
-      const stderrInterface = readline.createInterface({
-        input: childProcess.stderr,
-        crlfDelay: Infinity
+      childProcess.on('spawn', () => {
+        logToSupabase(projectId, `Claude process spawned with PID: ${childProcess.pid}`, 'info').catch((err) => {
+          console.error(`Failed to log Claude spawn for project ${projectId}:`, err);
+        });
       });
 
-      stderrInterface.on('line', async (line) => {
-        if (line.trim()) {
-          await logToSupabase(projectId, `[stderr] ${line}`, 'warning');
-        }
+      childProcess.on('error', (error) => {
+        logToSupabase(projectId, `Claude process error: ${error.message}`, 'error')
+          .catch((err) => console.error(`Failed to log Claude error for project ${projectId}:`, err))
+          .finally(() => finish(reject, error));
       });
 
-      // Add spawn event handler to catch immediate failures
-      childProcess.on('spawn', async () => {
-        await logToSupabase(projectId, 'Claude process spawned successfully', 'info');
-      });
-
-      // Handle process exit
       childProcess.on('close', async (code) => {
-        // Clean up readline interfaces
-        stdoutInterface.close();
-        stderrInterface.close();
+        if (settled) return;
 
-        // Remove from active processes registry
-        activeProcesses.delete(projectId);
-
-        if (code === 0) {
-          await logToSupabase(projectId, 'Translation completed successfully!', 'success');
-          resolve();
-        } else {
+        if (code !== 0) {
           await logToSupabase(projectId, `Claude process exited with code ${code}`, 'error');
-          reject(new Error(`Process exited with code ${code}`));
+          finish(reject, new Error(`Claude process exited with code ${code}`));
+          return;
         }
-      });
 
-      // Handle process errors
-      childProcess.on('error', async (error) => {
-        // Clean up readline interfaces
-        stdoutInterface.close();
-        stderrInterface.close();
+        try {
+          const libDir = path.join(workspacePath, 'lib');
+          const entries = await fs.readdir(libDir);
+          const dartFiles = entries.filter((file) => file.endsWith('.dart'));
+          if (dartFiles.length === 0) {
+            finish(reject, new Error('Claude exited 0 but no .dart files were created under lib/'));
+            return;
+          }
+        } catch {
+          finish(reject, new Error('Claude exited 0 but lib/ directory is missing'));
+          return;
+        }
 
-        // Remove from active processes registry
-        activeProcesses.delete(projectId);
-
-        await logToSupabase(projectId, `Claude process error: ${error.message}`, 'error');
-        reject(error);
+        await logToSupabase(projectId, 'Translation completed successfully!', 'success');
+        finish(resolve);
       });
     });
 
