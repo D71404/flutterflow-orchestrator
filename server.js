@@ -163,7 +163,7 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// Stop build endpoint
+// Stop build endpoint (Force Reset)
 app.post('/api/stop-build', async (req, res) => {
   const { projectId } = req.body;
 
@@ -175,43 +175,56 @@ app.post('/api/stop-build', async (req, res) => {
     });
   }
 
-  // Check if there's an active process for this project
-  if (!activeProcesses.has(projectId)) {
-    return res.status(404).json({
-      error: 'No active build found for this project',
-      projectId
-    });
-  }
-
   try {
-    // Get the child process
-    const childProcess = activeProcesses.get(projectId);
+    // If there's an active process, kill it
+    if (activeProcesses.has(projectId)) {
+      const childProcess = activeProcesses.get(projectId);
 
-    // Kill the process
-    childProcess.kill('SIGTERM');
+      try {
+        childProcess.kill('SIGTERM');
+        console.log(`Killed active process for project ${projectId}`);
+      } catch (killError) {
+        console.error(`Failed to kill process for project ${projectId}:`, killError);
+      }
 
-    // Remove from registry
-    activeProcesses.delete(projectId);
+      // Remove from registry
+      activeProcesses.delete(projectId);
+    }
 
-    // Log cancellation to Supabase
-    await logToSupabase(projectId, '[WARNING] Build cancelled by user', 'warning');
+    // ALWAYS log warning to Supabase (regardless of process state)
+    await logToSupabase(projectId, '[WARNING] Build forcefully reset by user', 'warning');
 
-    // Update project status to 'failed'
+    // ALWAYS update project status to 'draft' (regardless of process state)
     await supabase
       .from('projects')
-      .update({ status: 'failed' })
+      .update({ status: 'draft' })
       .eq('id', projectId);
 
+    // ALWAYS return 200 OK
     res.status(200).json({
-      message: 'Build cancelled successfully',
+      message: 'Build forcefully reset',
       projectId,
-      status: 'failed'
+      status: 'draft',
+      processWasActive: activeProcesses.has(projectId)
     });
   } catch (error) {
-    console.error('Error stopping build:', error);
-    res.status(500).json({
-      error: 'Failed to stop build',
-      message: error.message
+    console.error('Error in force reset:', error);
+
+    // Even on error, try to update status and return 200
+    try {
+      await supabase
+        .from('projects')
+        .update({ status: 'draft' })
+        .eq('id', projectId);
+    } catch (dbError) {
+      console.error('Failed to update database:', dbError);
+    }
+
+    res.status(200).json({
+      message: 'Build reset attempted (with errors)',
+      projectId,
+      status: 'draft',
+      error: error.message
     });
   }
 });
