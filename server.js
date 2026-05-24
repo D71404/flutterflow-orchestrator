@@ -606,6 +606,8 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
         try {
           await logToSupabase(projectId, 'Committing generated Flutter code to isolated branch...', 'info');
 
+          await execAsync(`git config --global --add safe.directory ${workspacePath}`);
+
           if (process.env.GITHUB_TOKEN) {
             await execAsync('git remote set-url origin "$GIT_AUTHENTICATED_URL"', {
               cwd: workspacePath,
