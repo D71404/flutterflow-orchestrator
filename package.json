@@ -1,0 +1,26 @@
+{
+  "name": "dan",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/D71404/rsi-webhook-trader.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/D71404/rsi-webhook-trader/issues"
+  },
+  "homepage": "https://github.com/D71404/rsi-webhook-trader#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.106.1",
+    "express": "^5.2.1"
+  }
+}
