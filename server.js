@@ -458,7 +458,7 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
     const claudePrompt = 'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Do not ask for confirmation.';
 
-    await new Promise((resolve, reject) => {
+    await new Promise(async (resolve, reject) => {
       // Build the full command as a single string for shell: true
       const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions`;
 
