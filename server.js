@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { exec } from 'child_process';
@@ -13,6 +14,9 @@ const __dirname = path.dirname(__filename);
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Enable CORS for all origins
+app.use(cors());
 
 // Middleware
 app.use(express.json());
