@@ -476,6 +476,7 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
         stdio: ['pipe', 'pipe', 'pipe'], // Keep stdin open for the echo pipe
         env: {
           ...process.env,
+          HOME: workspacePath, // Override HOME to avoid /root/.bashrc permission issues
           FLUTTERFLOW_PROJECT: flutterflowId,
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           CI: 'true', // Force headless CI mode
