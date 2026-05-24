@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -452,47 +452,81 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
       await logToSupabase(projectId, `Warning: Could not copy SKILL.md: ${err.message}`, 'warning');
     }
 
-    // Step 4: Run Claude CLI
+    // Step 4: Run Claude CLI with streaming output
     await logToSupabase(projectId, 'Starting Claude Code translation...', 'info');
 
     const claudePrompt = 'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Do not ask for confirmation.';
 
     await new Promise((resolve, reject) => {
-      const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions`;
-
-      const childProcess = exec(claudeCommand, {
+      // Use spawn for real-time streaming instead of exec
+      const childProcess = spawn('claude', ['-p', claudePrompt, '--dangerously-skip-permissions'], {
         cwd: workspacePath,
         uid: 1000,
         gid: 1000,
-        maxBuffer: 50 * 1024 * 1024, // 50MB buffer for Claude output
-        timeout: 30 * 60 * 1000, // 30 minute timeout
+        shell: true,
         env: {
           ...process.env,
           FLUTTERFLOW_PROJECT: flutterflowId,
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY
         }
-      }, async (error, stdout, stderr) => {
-        // Remove from active processes registry
-        activeProcesses.delete(projectId);
-
-        if (error) {
-          await logToSupabase(projectId, `Claude execution failed: ${stderr || error.message}`, 'error');
-          reject(error);
-        } else {
-          if (stdout) {
-            // Split large output into chunks if needed
-            const chunks = stdout.match(/.{1,5000}/g) || [];
-            for (const chunk of chunks) {
-              await logToSupabase(projectId, chunk, 'info');
-            }
-          }
-          await logToSupabase(projectId, 'Translation completed successfully!', 'success');
-          resolve();
-        }
       });
 
       // Store process in registry for potential cancellation
       activeProcesses.set(projectId, childProcess);
+
+      let outputBuffer = '';
+      let errorBuffer = '';
+
+      // Stream stdout in real-time
+      childProcess.stdout.on('data', async (chunk) => {
+        const output = chunk.toString();
+        outputBuffer += output;
+
+        // Log each line as it comes in
+        const lines = output.split('\n');
+        for (const line of lines) {
+          if (line.trim()) {
+            await logToSupabase(projectId, line, 'info');
+          }
+        }
+      });
+
+      // Stream stderr in real-time
+      childProcess.stderr.on('data', async (chunk) => {
+        const error = chunk.toString();
+        errorBuffer += error;
+
+        // Log each error line as it comes in
+        const lines = error.split('\n');
+        for (const line of lines) {
+          if (line.trim()) {
+            await logToSupabase(projectId, `[stderr] ${line}`, 'warning');
+          }
+        }
+      });
+
+      // Handle process exit
+      childProcess.on('close', async (code) => {
+        // Remove from active processes registry
+        activeProcesses.delete(projectId);
+
+        if (code === 0) {
+          await logToSupabase(projectId, 'Translation completed successfully!', 'success');
+          resolve();
+        } else {
+          await logToSupabase(projectId, `Claude process exited with code ${code}`, 'error');
+          reject(new Error(`Process exited with code ${code}`));
+        }
+      });
+
+      // Handle process errors
+      childProcess.on('error', async (error) => {
+        // Remove from active processes registry
+        activeProcesses.delete(projectId);
+
+        await logToSupabase(projectId, `Claude process error: ${error.message}`, 'error');
+        reject(error);
+      });
     });
 
     // Update project status to 'completed'
