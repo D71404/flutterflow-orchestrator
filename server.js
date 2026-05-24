@@ -76,14 +76,14 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 4. Smart Router Logic - Classify the request
-    let selectedModel = 'claude-3-5-haiku-20241022'; // Default to simple
+    let selectedModel = 'claude-4-5-haiku-2025-01-22'; // Default to easy
 
     try {
       const classificationResponse = await anthropic.messages.create({
-        model: 'claude-3-5-haiku-latest',
+        model: 'claude-4-5-haiku-2025-01-22',
         max_tokens: 10,
         temperature: 0,
-        system: 'You are a request classifier. Classify the following request as either "SIMPLE" (color changes, text edits, padding) or "COMPLEX" (database logic, new pages, complex state). Return ONLY the word "SIMPLE" or "COMPLEX".',
+        system: 'You are a request classifier. Classify the following request as either "EASY" (color changes, text edits, padding), "NORMAL" (UI layouts, component changes, moderate logic), or "ADVANCED" (database logic, new pages, complex state, architecture). Return ONLY the word "EASY", "NORMAL", or "ADVANCED".',
         messages: [
           {
             role: 'user',
@@ -94,13 +94,15 @@ app.post('/api/chat', async (req, res) => {
 
       const classification = classificationResponse.content[0]?.text?.trim().toUpperCase();
 
-      if (classification === 'COMPLEX') {
-        selectedModel = 'claude-3-5-sonnet-20241022';
+      if (classification === 'NORMAL') {
+        selectedModel = 'claude-4-5-sonnet-2025-01-20'; // Use Sonnet 4.5 for normal tasks
+      } else if (classification === 'ADVANCED') {
+        selectedModel = 'claude-4-5-opus-2025-01-20'; // Use Opus 4.5 for advanced tasks
       }
 
       console.log(`Chat request classified as ${classification}, using model: ${selectedModel}`);
     } catch (classificationError) {
-      console.error('Classification error, defaulting to SIMPLE:', classificationError);
+      console.error('Classification error, defaulting to EASY:', classificationError);
     }
 
     // Return 200 OK immediately
