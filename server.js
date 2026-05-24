@@ -356,35 +356,31 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
       await logToSupabase(projectId, `Warning: Could not change ownership: ${chownError.message}`, 'warning');
     }
 
-    // Step 3: Copy agent-environment folder if it exists
-    const agentEnvPath = '/app/agent-environment/.claude';
-    const localAgentEnvPath = path.join(__dirname, 'agent-environment', '.claude');
+    // Step 3: Copy SKILL.md rulebook to workspace
+    await logToSupabase(projectId, 'Copying SKILL.md rulebook...', 'info');
 
     try {
-      // Try app path first, then local path
+      // Build path to SKILL.md - try production path first, then local
+      const productionSkillPath = '/app/agent-environment/skills/lovable-to-flutterflow/SKILL.md';
+      const localSkillPath = path.join(__dirname, 'agent-environment', 'skills', 'lovable-to-flutterflow', 'SKILL.md');
+      const destinationPath = path.join(workspacePath, 'SKILL.md');
+
+      let skillPath;
       try {
-        await fs.access(agentEnvPath);
-        await logToSupabase(projectId, 'Copying Claude skills from /app/agent-environment', 'info');
-        await new Promise((resolve, reject) => {
-          exec(`cp -r "${agentEnvPath}" "${workspacePath}/.claude"`, (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
+        await fs.access(productionSkillPath);
+        skillPath = productionSkillPath;
+        await logToSupabase(projectId, 'Using production SKILL.md path', 'info');
       } catch {
-        // Fallback to local path
-        await fs.access(localAgentEnvPath);
-        await logToSupabase(projectId, 'Copying Claude skills from local agent-environment', 'info');
-        await new Promise((resolve, reject) => {
-          exec(`cp -r "${localAgentEnvPath}" "${workspacePath}/.claude"`, (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
+        await fs.access(localSkillPath);
+        skillPath = localSkillPath;
+        await logToSupabase(projectId, 'Using local SKILL.md path', 'info');
       }
-      await logToSupabase(projectId, 'Claude skills copied successfully', 'info');
+
+      // Copy the SKILL.md file to workspace root
+      await fs.copyFile(skillPath, destinationPath);
+      await logToSupabase(projectId, 'SKILL.md copied successfully', 'info');
     } catch (err) {
-      await logToSupabase(projectId, 'Warning: Could not copy Claude skills (continuing anyway)', 'warning');
+      await logToSupabase(projectId, `Warning: Could not copy SKILL.md: ${err.message}`, 'warning');
     }
 
     // Step 4: Run Claude CLI
