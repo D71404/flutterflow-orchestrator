@@ -489,6 +489,7 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
       'Read,Edit,Bash,Glob,Grep',
       '--output-format',
       'stream-json',
+      '--verbose',
     ];
 
     const commandPreview = claudeArgs
