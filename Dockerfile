@@ -1,5 +1,5 @@
-# Use Node.js 20 on Debian Bullseye as base image
-FROM node:20-bullseye
+# Use Node.js 22 on Debian Bullseye as base image
+FROM node:22-bullseye
 
 # Install dependencies for Dart SDK
 RUN apt-get update && apt-get install -y \
