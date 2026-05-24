@@ -18,6 +18,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Global registry to track active build processes
+const activeProcesses = new Map();
+
 // Enable CORS for all origins
 app.use(cors());
 
@@ -155,6 +158,59 @@ app.post('/api/chat', async (req, res) => {
     console.error('Error in /api/chat:', error);
     res.status(500).json({
       error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// Stop build endpoint
+app.post('/api/stop-build', async (req, res) => {
+  const { projectId } = req.body;
+
+  // Validate required parameter
+  if (!projectId) {
+    return res.status(400).json({
+      error: 'Missing required parameter',
+      required: ['projectId']
+    });
+  }
+
+  // Check if there's an active process for this project
+  if (!activeProcesses.has(projectId)) {
+    return res.status(404).json({
+      error: 'No active build found for this project',
+      projectId
+    });
+  }
+
+  try {
+    // Get the child process
+    const childProcess = activeProcesses.get(projectId);
+
+    // Kill the process
+    childProcess.kill('SIGTERM');
+
+    // Remove from registry
+    activeProcesses.delete(projectId);
+
+    // Log cancellation to Supabase
+    await logToSupabase(projectId, '[WARNING] Build cancelled by user', 'warning');
+
+    // Update project status to 'failed'
+    await supabase
+      .from('projects')
+      .update({ status: 'failed' })
+      .eq('id', projectId);
+
+    res.status(200).json({
+      message: 'Build cancelled successfully',
+      projectId,
+      status: 'failed'
+    });
+  } catch (error) {
+    console.error('Error stopping build:', error);
+    res.status(500).json({
+      error: 'Failed to stop build',
       message: error.message
     });
   }
@@ -391,7 +447,7 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     await new Promise((resolve, reject) => {
       const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions`;
 
-      exec(claudeCommand, {
+      const childProcess = exec(claudeCommand, {
         cwd: workspacePath,
         uid: 1000,
         gid: 1000,
@@ -403,6 +459,9 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY
         }
       }, async (error, stdout, stderr) => {
+        // Remove from active processes registry
+        activeProcesses.delete(projectId);
+
         if (error) {
           await logToSupabase(projectId, `Claude execution failed: ${stderr || error.message}`, 'error');
           reject(error);
@@ -418,6 +477,9 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
           resolve();
         }
       });
+
+      // Store process in registry for potential cancellation
+      activeProcesses.set(projectId, childProcess);
     });
 
     // Update project status to 'completed'
@@ -437,6 +499,9 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     }
 
   } catch (error) {
+    // Clean up from active processes registry
+    activeProcesses.delete(projectId);
+
     // Sanitize and log the error
     const sanitizedMessage = sanitizeError(error.message);
     const sanitizedStack = sanitizeError(error.stack);
