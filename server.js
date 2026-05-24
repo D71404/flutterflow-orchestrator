@@ -471,8 +471,10 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     }
 
     const claudePrompt =
-      'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. ' +
-      'Output raw Flutter/Dart code into a lib/ folder. Do not ask for confirmation.';
+      'You are a Mobile Software Architect. Analyze this React web application repository. ' +
+      'Do NOT write any Flutter code yet. Instead, map out the architecture. ' +
+      'Output a numbered list of all the major screens and components that will need to be translated into Flutter/Dart. ' +
+      'Keep it concise. Do not ask for confirmation.';
 
     const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000; // 45 minutes
 
@@ -590,20 +592,7 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
           return;
         }
 
-        try {
-          const libDir = path.join(workspacePath, 'lib');
-          const entries = await fs.readdir(libDir);
-          const dartFiles = entries.filter((file) => file.endsWith('.dart'));
-          if (dartFiles.length === 0) {
-            finish(reject, new Error('Claude exited 0 but no .dart files were created under lib/'));
-            return;
-          }
-        } catch {
-          finish(reject, new Error('Claude exited 0 but lib/ directory is missing'));
-          return;
-        }
-
-        await logToSupabase(projectId, 'Translation completed successfully!', 'success');
+        await logToSupabase(projectId, 'Planning phase completed successfully!', 'success');
         finish(resolve);
       });
     });
