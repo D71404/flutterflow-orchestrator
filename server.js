@@ -55,8 +55,8 @@ async function logToSupabase(projectId, message, level = 'info') {
       .from('build_logs')
       .insert({
         project_id: projectId,
-        log_type: level,
-        content: message,
+        level: level,
+        line: message,
         created_at: new Date().toISOString()
       });
 
@@ -188,8 +188,8 @@ async function processChatInBackground(projectId, message, selectedModel) {
         .from('build_logs')
         .insert({
           project_id: projectId,
-          log_type: 'error',
-          content: `Workspace not found. Please run /api/generate-mobile first to create the project workspace.`,
+          level: 'error',
+          line: `Workspace not found. Please run /api/generate-mobile first to create the project workspace.`,
           created_at: new Date().toISOString()
         });
       return;
@@ -224,8 +224,8 @@ async function processChatInBackground(projectId, message, selectedModel) {
           .from('build_logs')
           .insert({
             project_id: projectId,
-            log_type: 'chat_error',
-            content: stderr || error.message,
+            level: 'chat_error',
+            line: stderr || error.message,
             created_at: new Date().toISOString()
           });
 
@@ -238,8 +238,8 @@ async function processChatInBackground(projectId, message, selectedModel) {
           .from('build_logs')
           .insert({
             project_id: projectId,
-            log_type: 'chat_success',
-            content: stdout,
+            level: 'chat_success',
+            line: stdout,
             created_at: new Date().toISOString()
           });
 
@@ -255,8 +255,8 @@ async function processChatInBackground(projectId, message, selectedModel) {
       .from('build_logs')
       .insert({
         project_id: projectId,
-        log_type: 'chat_error',
-        content: error.message,
+        level: 'chat_error',
+        line: error.message,
         created_at: new Date().toISOString()
       });
   }
@@ -284,14 +284,32 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     // Step 2: Clone the repository
     await logToSupabase(projectId, `Cloning repository from: ${lovableRepoUrl}`, 'info');
 
+    // Add GitHub token authentication if available
+    let cloneUrl = lovableRepoUrl;
+    if (process.env.GITHUB_TOKEN) {
+      try {
+        const url = new URL(lovableRepoUrl);
+        if (url.hostname === 'github.com') {
+          // Inject token into the URL for authentication
+          url.username = process.env.GITHUB_TOKEN;
+          cloneUrl = url.toString();
+          await logToSupabase(projectId, 'Using GitHub token for authentication', 'info');
+        }
+      } catch (urlError) {
+        await logToSupabase(projectId, `Warning: Could not parse repository URL: ${urlError.message}`, 'warning');
+      }
+    }
+
     await new Promise((resolve, reject) => {
-      exec(`git clone "${lovableRepoUrl}" .`, {
+      exec(`git clone "${cloneUrl}" .`, {
         cwd: workspacePath,
         maxBuffer: 10 * 1024 * 1024, // 10MB buffer
         timeout: 5 * 60 * 1000, // 5 minute timeout for clone
       }, async (error, stdout, stderr) => {
         if (error) {
-          await logToSupabase(projectId, `Git clone failed: ${stderr || error.message}`, 'error');
+          // Sanitize error message to not expose token
+          const sanitizedError = (stderr || error.message).replace(/https:\/\/[^@]+@/g, 'https://***@');
+          await logToSupabase(projectId, `Git clone failed: ${sanitizedError}`, 'error');
           reject(error);
         } else {
           if (stdout) await logToSupabase(projectId, `Clone output: ${stdout}`, 'info');
@@ -413,10 +431,12 @@ app.listen(PORT, () => {
   console.log('Supabase URL:', supabaseUrl ? 'Configured' : 'Not configured');
   console.log('Supabase Service Key:', supabaseServiceKey ? 'Configured' : 'Not configured');
   console.log('Anthropic API Key:', anthropicApiKey ? 'Configured' : 'Not configured');
+  console.log('GitHub Token:', process.env.GITHUB_TOKEN ? 'Configured' : 'Not configured');
   console.log('Required environment variables:');
   console.log('  - SUPABASE_URL');
   console.log('  - SUPABASE_SERVICE_KEY');
   console.log('  - ANTHROPIC_API_KEY (for chat features)');
+  console.log('  - GITHUB_TOKEN (optional, for private repos)');
 });
 
 export default app;
