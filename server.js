@@ -459,24 +459,40 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     const claudePrompt = 'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Do not ask for confirmation.';
 
     await new Promise((resolve, reject) => {
+      // Build the full command as a single string for shell: true
+      const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions`;
+
+      await logToSupabase(projectId, `Executing command: ${claudeCommand}`, 'info');
+
       // Use spawn with stdin closed and CI mode enabled
-      const childProcess = spawn('claude', ['-p', claudePrompt, '--dangerously-skip-permissions'], {
+      const childProcess = spawn(claudeCommand, [], {
         cwd: workspacePath,
         uid: 1000,
         gid: 1000,
-        shell: true,
+        shell: '/bin/bash',
         stdio: ['ignore', 'pipe', 'pipe'], // Close stdin, pipe stdout/stderr
         env: {
           ...process.env,
           FLUTTERFLOW_PROJECT: flutterflowId,
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           CI: 'true', // Force headless CI mode
-          FORCE_COLOR: '0' // Disable ANSI color codes
+          FORCE_COLOR: '0', // Disable ANSI color codes
+          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' // Ensure PATH is set
         }
       });
 
+      // Log that process was spawned
+      await logToSupabase(projectId, `Process spawned with PID: ${childProcess.pid}`, 'info');
+
       // Store process in registry for potential cancellation
       activeProcesses.set(projectId, childProcess);
+
+      // Check if process spawned successfully
+      if (!childProcess.pid) {
+        await logToSupabase(projectId, 'Failed to spawn Claude process - no PID assigned', 'error');
+        reject(new Error('Failed to spawn Claude process'));
+        return;
+      }
 
       // Use readline for line-buffered stdout streaming
       const stdoutInterface = readline.createInterface({
@@ -500,6 +516,11 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
         if (line.trim()) {
           await logToSupabase(projectId, `[stderr] ${line}`, 'warning');
         }
+      });
+
+      // Add spawn event handler to catch immediate failures
+      childProcess.on('spawn', async () => {
+        await logToSupabase(projectId, 'Claude process spawned successfully', 'info');
       });
 
       // Handle process exit
