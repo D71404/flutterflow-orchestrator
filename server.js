@@ -460,20 +460,20 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
     await new Promise(async (resolve, reject) => {
       // Build the full command as a single string for shell: true
-      // Pipe the prompt via echo to ensure Claude receives it properly
-      // Use -p for print mode (non-interactive), --output-format=text for plain output
-      // --tools=default enables all built-in tools, --verbose for debug output
-      const claudeCommand = `echo "${claudePrompt}" | claude -p --dangerously-skip-permissions --output-format=text --tools=default --verbose`;
+      // Use -p with quoted prompt directly as argument (no pipe needed)
+      // --dangerously-skip-permissions must come AFTER the prompt to avoid being hijacked
+      // --verbose for debug output
+      const claudeCommand = `claude -p "Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Output the raw Flutter/Dart code into a lib folder. Do not ask for confirmation." --dangerously-skip-permissions --verbose`;
 
       await logToSupabase(projectId, `Executing command: ${claudeCommand}`, 'info');
 
-      // Use spawn with shell mode enabled for pipe
+      // Use spawn with shell mode enabled
       const childProcess = spawn(claudeCommand, [], {
         cwd: workspacePath,
         uid: 1000,
         gid: 1000,
         shell: '/bin/bash',
-        stdio: ['pipe', 'pipe', 'pipe'], // Keep stdin open for the echo pipe
+        stdio: ['ignore', 'pipe', 'pipe'], // Close stdin since prompt is in command args
         env: {
           ...process.env,
           HOME: workspacePath, // Override HOME to avoid /root/.bashrc permission issues
@@ -490,11 +490,6 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
       // Log that process was spawned
       await logToSupabase(projectId, `Process spawned with PID: ${childProcess.pid}`, 'info');
-
-      // Close stdin since echo pipe is handled by bash
-      if (childProcess.stdin) {
-        childProcess.stdin.end();
-      }
 
       // Store process in registry for potential cancellation
       activeProcesses.set(projectId, childProcess);
