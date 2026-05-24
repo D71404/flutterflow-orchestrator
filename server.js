@@ -460,19 +460,20 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
     await new Promise(async (resolve, reject) => {
       // Build the full command as a single string for shell: true
+      // Pipe the prompt via echo to ensure Claude receives it properly
       // Use -p for print mode (non-interactive), --output-format=text for plain output
       // --tools=default enables all built-in tools, --verbose for debug output
-      const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions --output-format=text --tools=default --verbose`;
+      const claudeCommand = `echo "${claudePrompt}" | claude -p --dangerously-skip-permissions --output-format=text --tools=default --verbose`;
 
       await logToSupabase(projectId, `Executing command: ${claudeCommand}`, 'info');
 
-      // Use spawn with stdin closed and CI mode enabled
+      // Use spawn with shell mode enabled for pipe
       const childProcess = spawn(claudeCommand, [], {
         cwd: workspacePath,
         uid: 1000,
         gid: 1000,
         shell: '/bin/bash',
-        stdio: ['ignore', 'pipe', 'pipe'], // Close stdin, pipe stdout/stderr
+        stdio: ['pipe', 'pipe', 'pipe'], // Keep stdin open for the echo pipe
         env: {
           ...process.env,
           FLUTTERFLOW_PROJECT: flutterflowId,
@@ -488,6 +489,11 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
       // Log that process was spawned
       await logToSupabase(projectId, `Process spawned with PID: ${childProcess.pid}`, 'info');
+
+      // Close stdin since echo pipe is handled by bash
+      if (childProcess.stdin) {
+        childProcess.stdin.end();
+      }
 
       // Store process in registry for potential cancellation
       activeProcesses.set(projectId, childProcess);
