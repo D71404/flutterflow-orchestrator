@@ -51,6 +51,14 @@ const anthropic = new Anthropic({
   apiKey: anthropicApiKey || ''
 });
 
+// Helper function to sanitize error messages (remove tokens)
+function sanitizeError(message) {
+  if (!message) return message;
+  return String(message)
+    .replace(/https:\/\/[^@\s]+@github\.com/g, 'https://***@github.com')
+    .replace(/https:\/\/[^@\s]+@/g, 'https://***@');
+}
+
 // Helper function to log to Supabase
 async function logToSupabase(projectId, message, level = 'info') {
   try {
@@ -281,8 +289,13 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     // Log initialization
     await logToSupabase(projectId, 'Initializing build environment...', 'info');
 
-    // Step 1: Create workspace directory
-    await logToSupabase(projectId, `Creating workspace directory: ${workspacePath}`, 'info');
+    // Step 1: Clean and create workspace directory
+    await logToSupabase(projectId, `Preparing workspace directory: ${workspacePath}`, 'info');
+
+    // Delete existing workspace if it exists (from previous failed runs)
+    await fs.rm(workspacePath, { recursive: true, force: true });
+
+    // Create fresh workspace
     await fs.mkdir(workspacePath, { recursive: true });
     await logToSupabase(projectId, 'Workspace directory created successfully', 'info');
 
@@ -312,12 +325,22 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
         timeout: 5 * 60 * 1000, // 5 minute timeout for clone
       }, async (error, stdout, stderr) => {
         if (error) {
-          // Sanitize error message to not expose token
-          const sanitizedError = (stderr || error.message).replace(/https:\/\/[^@]+@/g, 'https://***@');
-          await logToSupabase(projectId, `Git clone failed: ${sanitizedError}`, 'error');
-          reject(error);
+          // Sanitize all error messages to not expose token
+          const sanitizedStderr = sanitizeError(stderr);
+          const sanitizedErrorMsg = sanitizeError(error.message);
+          const sanitizedStack = sanitizeError(error.stack);
+
+          await logToSupabase(projectId, `Git clone failed: ${sanitizedStderr || sanitizedErrorMsg}`, 'error');
+
+          // Create sanitized error to reject with
+          const sanitizedError = new Error(sanitizedErrorMsg);
+          sanitizedError.stack = sanitizedStack;
+          reject(sanitizedError);
         } else {
-          if (stdout) await logToSupabase(projectId, `Clone output: ${stdout}`, 'info');
+          if (stdout) {
+            const sanitizedStdout = sanitizeError(stdout);
+            await logToSupabase(projectId, `Clone output: ${sanitizedStdout}`, 'info');
+          }
           await logToSupabase(projectId, 'Repository cloned successfully', 'info');
           resolve();
         }
@@ -418,8 +441,11 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     }
 
   } catch (error) {
-    // Log the exact error
-    await logToSupabase(projectId, `Fatal error: ${error.message}`, 'error');
+    // Sanitize and log the error
+    const sanitizedMessage = sanitizeError(error.message);
+    const sanitizedStack = sanitizeError(error.stack);
+
+    await logToSupabase(projectId, `Fatal error: ${sanitizedMessage}`, 'error');
 
     // Update project status to 'failed'
     await supabase
@@ -427,7 +453,11 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
       .update({ status: 'failed' })
       .eq('id', projectId);
 
-    console.error(`Process failed for project ${projectId}:`, error);
+    // Console log with sanitized error
+    console.error(`Process failed for project ${projectId}:`, sanitizedMessage);
+    if (sanitizedStack) {
+      console.error('Stack trace:', sanitizedStack);
+    }
   }
 }
 
