@@ -48,6 +48,27 @@ const anthropic = new Anthropic({
   apiKey: anthropicApiKey || ''
 });
 
+// Helper function to log to Supabase
+async function logToSupabase(projectId, message, level = 'info') {
+  try {
+    const { error } = await supabase
+      .from('build_logs')
+      .insert({
+        project_id: projectId,
+        log_type: level,
+        content: message,
+        created_at: new Date().toISOString()
+      });
+
+    if (error) {
+      console.error('Failed to log to Supabase:', error);
+    }
+    console.log(`[${level.toUpperCase()}] Project ${projectId}: ${message}`);
+  } catch (err) {
+    console.error('Error in logToSupabase:', err);
+  }
+}
+
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({
@@ -130,49 +151,25 @@ app.post('/api/chat', async (req, res) => {
 
 // Mobile app generation endpoint
 app.post('/api/generate-mobile', async (req, res) => {
-  try {
-    // 1. Extract required parameters from request body
-    const { projectId, lovableRepoUrl, flutterflowId } = req.body;
+  const { projectId, lovableRepoUrl, flutterflowId } = req.body;
 
-    // Validate required parameters
-    if (!projectId || !lovableRepoUrl || !flutterflowId) {
-      return res.status(400).json({
-        error: 'Missing required parameters',
-        required: ['projectId', 'lovableRepoUrl', 'flutterflowId']
-      });
-    }
-
-    // 3. Update project status to 'translating'
-    const { error: updateError } = await supabase
-      .from('projects')
-      .update({ status: 'translating' })
-      .eq('id', projectId);
-
-    if (updateError) {
-      console.error('Error updating project status:', updateError);
-      return res.status(500).json({
-        error: 'Failed to update project status',
-        details: updateError.message
-      });
-    }
-
-    // 4. Immediately respond with 202 Accepted
-    res.status(202).json({
-      message: 'Mobile generation process has started in the background',
-      projectId,
-      status: 'translating'
-    });
-
-    // 5-7. Background processing
-    processInBackground(projectId, lovableRepoUrl, flutterflowId);
-
-  } catch (error) {
-    console.error('Error in /api/generate-mobile:', error);
-    res.status(500).json({
-      error: 'Internal server error',
-      message: error.message
+  // Validate required parameters
+  if (!projectId || !lovableRepoUrl || !flutterflowId) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      required: ['projectId', 'lovableRepoUrl', 'flutterflowId']
     });
   }
+
+  // Immediately return 200 OK to unblock the frontend
+  res.status(200).json({
+    message: 'Mobile generation process has started',
+    projectId,
+    status: 'processing'
+  });
+
+  // All work happens asynchronously in the background
+  processInBackground(projectId, lovableRepoUrl, flutterflowId);
 });
 
 // Chat background processing function
@@ -268,104 +265,127 @@ async function processChatInBackground(projectId, message, selectedModel) {
 // Background processing function
 async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
   const workspacePath = `/tmp/workspaces/${projectId}`;
-  const webAppPath = path.join(workspacePath, 'web-app');
-  const agentEnvPath = '/app/agent-environment/.claude';
 
   try {
-    console.log(`Starting background processing for project ${projectId}`);
+    // Update project status to 'translating'
+    await supabase
+      .from('projects')
+      .update({ status: 'translating' })
+      .eq('id', projectId);
 
-    // 5. Create isolated workspace directory
+    // Log initialization
+    await logToSupabase(projectId, 'Initializing build environment...', 'info');
+
+    // Step 1: Create workspace directory
+    await logToSupabase(projectId, `Creating workspace directory: ${workspacePath}`, 'info');
     await fs.mkdir(workspacePath, { recursive: true });
-    console.log(`Created workspace: ${workspacePath}`);
+    await logToSupabase(projectId, 'Workspace directory created successfully', 'info');
 
-    // 6. Build and execute shell script
-    const shellScript = `
-      set -e
+    // Step 2: Clone the repository
+    await logToSupabase(projectId, `Cloning repository from: ${lovableRepoUrl}`, 'info');
 
-      # Git clone the repository
-      echo "Cloning repository: ${lovableRepoUrl}"
-      git clone "${lovableRepoUrl}" "${webAppPath}"
-
-      # Copy agent-environment/.claude folder
-      echo "Copying Claude skills..."
-      cp -r "${agentEnvPath}" "${webAppPath}/.claude"
-
-      # Navigate to web-app directory
-      cd "${webAppPath}"
-
-      # Export FlutterFlow project ID
-      export FLUTTERFLOW_PROJECT="${flutterflowId}"
-
-      # Run Claude Code CLI
-      echo "Running Claude Code CLI..."
-      claude -p "Run the lovable-to-flutterflow translation skill. Rebuild this React app natively using the flutterflow ai MCP server." --yes
-    `;
-
-    // Execute the shell script
-    exec(shellScript, {
-      shell: '/bin/bash',
-      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for output
-      timeout: 30 * 60 * 1000, // 30 minute timeout
-      env: {
-        ...process.env,
-        FLUTTERFLOW_PROJECT: flutterflowId
-      }
-    }, async (error, stdout, stderr) => {
-
-      // 7. Handle execution results
-      if (error) {
-        console.error(`Execution failed for project ${projectId}:`, error);
-
-        // Update project status to 'failed'
-        await supabase
-          .from('projects')
-          .update({ status: 'failed' })
-          .eq('id', projectId);
-
-        // Insert error log
-        await supabase
-          .from('build_logs')
-          .insert({
-            project_id: projectId,
-            log_type: 'error',
-            content: stderr || error.message,
-            created_at: new Date().toISOString()
-          });
-
-        console.log(`Project ${projectId} marked as failed`);
-      } else {
-        console.log(`Execution succeeded for project ${projectId}`);
-
-        // Update project status to 'completed'
-        await supabase
-          .from('projects')
-          .update({ status: 'completed' })
-          .eq('id', projectId);
-
-        // Insert success log
-        await supabase
-          .from('build_logs')
-          .insert({
-            project_id: projectId,
-            log_type: 'success',
-            content: stdout,
-            created_at: new Date().toISOString()
-          });
-
-        console.log(`Project ${projectId} marked as completed`);
-      }
-
-      // Optional: Clean up workspace after processing
-      try {
-        await fs.rm(workspacePath, { recursive: true, force: true });
-        console.log(`Cleaned up workspace for project ${projectId}`);
-      } catch (cleanupError) {
-        console.error(`Failed to clean up workspace for project ${projectId}:`, cleanupError);
-      }
+    await new Promise((resolve, reject) => {
+      exec(`git clone "${lovableRepoUrl}" .`, {
+        cwd: workspacePath,
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        timeout: 5 * 60 * 1000, // 5 minute timeout for clone
+      }, async (error, stdout, stderr) => {
+        if (error) {
+          await logToSupabase(projectId, `Git clone failed: ${stderr || error.message}`, 'error');
+          reject(error);
+        } else {
+          if (stdout) await logToSupabase(projectId, `Clone output: ${stdout}`, 'info');
+          await logToSupabase(projectId, 'Repository cloned successfully', 'info');
+          resolve();
+        }
+      });
     });
 
+    // Step 3: Copy agent-environment folder if it exists
+    const agentEnvPath = '/app/agent-environment/.claude';
+    const localAgentEnvPath = path.join(__dirname, 'agent-environment', '.claude');
+
+    try {
+      // Try app path first, then local path
+      try {
+        await fs.access(agentEnvPath);
+        await logToSupabase(projectId, 'Copying Claude skills from /app/agent-environment', 'info');
+        await new Promise((resolve, reject) => {
+          exec(`cp -r "${agentEnvPath}" "${workspacePath}/.claude"`, (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      } catch {
+        // Fallback to local path
+        await fs.access(localAgentEnvPath);
+        await logToSupabase(projectId, 'Copying Claude skills from local agent-environment', 'info');
+        await new Promise((resolve, reject) => {
+          exec(`cp -r "${localAgentEnvPath}" "${workspacePath}/.claude"`, (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      }
+      await logToSupabase(projectId, 'Claude skills copied successfully', 'info');
+    } catch (err) {
+      await logToSupabase(projectId, 'Warning: Could not copy Claude skills (continuing anyway)', 'warning');
+    }
+
+    // Step 4: Run Claude CLI
+    await logToSupabase(projectId, 'Starting Claude Code translation...', 'info');
+
+    const claudePrompt = 'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Do not ask for confirmation.';
+
+    await new Promise((resolve, reject) => {
+      const claudeCommand = `claude -p "${claudePrompt}" --yes`;
+
+      exec(claudeCommand, {
+        cwd: workspacePath,
+        maxBuffer: 50 * 1024 * 1024, // 50MB buffer for Claude output
+        timeout: 30 * 60 * 1000, // 30 minute timeout
+        env: {
+          ...process.env,
+          FLUTTERFLOW_PROJECT: flutterflowId,
+          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY
+        }
+      }, async (error, stdout, stderr) => {
+        if (error) {
+          await logToSupabase(projectId, `Claude execution failed: ${stderr || error.message}`, 'error');
+          reject(error);
+        } else {
+          if (stdout) {
+            // Split large output into chunks if needed
+            const chunks = stdout.match(/.{1,5000}/g) || [];
+            for (const chunk of chunks) {
+              await logToSupabase(projectId, chunk, 'info');
+            }
+          }
+          await logToSupabase(projectId, 'Translation completed successfully!', 'success');
+          resolve();
+        }
+      });
+    });
+
+    // Update project status to 'completed'
+    await supabase
+      .from('projects')
+      .update({ status: 'completed' })
+      .eq('id', projectId);
+
+    await logToSupabase(projectId, 'Project completed successfully', 'success');
+
+    // Clean up workspace
+    try {
+      await fs.rm(workspacePath, { recursive: true, force: true });
+      await logToSupabase(projectId, 'Workspace cleaned up', 'info');
+    } catch (cleanupError) {
+      await logToSupabase(projectId, `Warning: Could not clean up workspace: ${cleanupError.message}`, 'warning');
+    }
+
   } catch (error) {
-    console.error(`Background processing error for project ${projectId}:`, error);
+    // Log the exact error
+    await logToSupabase(projectId, `Fatal error: ${error.message}`, 'error');
 
     // Update project status to 'failed'
     await supabase
@@ -373,15 +393,7 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
       .update({ status: 'failed' })
       .eq('id', projectId);
 
-    // Insert error log
-    await supabase
-      .from('build_logs')
-      .insert({
-        project_id: projectId,
-        log_type: 'error',
-        content: error.message,
-        created_at: new Date().toISOString()
-      });
+    console.error(`Process failed for project ${projectId}:`, error);
   }
 }
 
