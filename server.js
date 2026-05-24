@@ -201,7 +201,7 @@ async function processChatInBackground(projectId, message, selectedModel) {
 
       # Run Claude Code CLI with the selected model
       echo "Running Claude Code CLI with model: ${selectedModel}"
-      claude -p "${message}. Also, do not ask for confirmation." --model ${selectedModel} --yes
+      claude -p "${message}. Also, do not ask for confirmation." --model ${selectedModel} --dangerously-skip-permissions
     `;
 
     // Execute the shell script
@@ -356,7 +356,7 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     const claudePrompt = 'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Do not ask for confirmation.';
 
     await new Promise((resolve, reject) => {
-      const claudeCommand = `claude -p "${claudePrompt}" --yes`;
+      const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions`;
 
       exec(claudeCommand, {
         cwd: workspacePath,
