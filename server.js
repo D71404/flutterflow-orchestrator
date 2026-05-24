@@ -3,9 +3,12 @@ import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { exec } from 'child_process';
+import { promisify } from 'util';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+const execAsync = promisify(exec);
 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -207,6 +210,8 @@ async function processChatInBackground(projectId, message, selectedModel) {
     // Execute the shell script
     exec(shellScript, {
       shell: '/bin/bash',
+      uid: 1000,
+      gid: 1000,
       maxBuffer: 10 * 1024 * 1024, // 10MB buffer
       timeout: 15 * 60 * 1000, // 15 minute timeout
       env: {
@@ -319,6 +324,15 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
       });
     });
 
+    // Step 2.5: Change ownership to non-root user (UID 1000)
+    await logToSupabase(projectId, 'Changing workspace ownership to UID 1000...', 'info');
+    try {
+      await execAsync('chown -R 1000:1000 .', { cwd: workspacePath });
+      await logToSupabase(projectId, 'Ownership changed successfully', 'info');
+    } catch (chownError) {
+      await logToSupabase(projectId, `Warning: Could not change ownership: ${chownError.message}`, 'warning');
+    }
+
     // Step 3: Copy agent-environment folder if it exists
     const agentEnvPath = '/app/agent-environment/.claude';
     const localAgentEnvPath = path.join(__dirname, 'agent-environment', '.claude');
@@ -360,6 +374,8 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
       exec(claudeCommand, {
         cwd: workspacePath,
+        uid: 1000,
+        gid: 1000,
         maxBuffer: 50 * 1024 * 1024, // 50MB buffer for Claude output
         timeout: 30 * 60 * 1000, // 30 minute timeout
         env: {
