@@ -487,14 +487,17 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
       'Read,Edit,Bash,Glob,Grep',
       '--output-format',
       'stream-json',
-      '--verbose',
-      '--include-partial-messages',
     ];
 
     const commandPreview = claudeArgs
       .map((arg) => (/\s/.test(arg) ? JSON.stringify(arg) : arg))
       .join(' ');
     await logToSupabase(projectId, `Executing: claude ${commandPreview}`, 'info');
+
+    await fs.writeFile(
+      path.join(workspacePath, '.claudeignore'),
+      'node_modules/\nbuild/\n.git/\ndist/\n.next/\n.expo/\n'
+    );
 
     await new Promise((resolve, reject) => {
       let settled = false;
