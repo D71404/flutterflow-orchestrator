@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import readline from 'readline';
 
 const execAsync = promisify(exec);
 
@@ -458,55 +459,55 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
     const claudePrompt = 'Translate this web app into a FlutterFlow native app based on the SKILL.md rules. Do not ask for confirmation.';
 
     await new Promise((resolve, reject) => {
-      // Use spawn for real-time streaming instead of exec
+      // Use spawn with stdin closed and CI mode enabled
       const childProcess = spawn('claude', ['-p', claudePrompt, '--dangerously-skip-permissions'], {
         cwd: workspacePath,
         uid: 1000,
         gid: 1000,
         shell: true,
+        stdio: ['ignore', 'pipe', 'pipe'], // Close stdin, pipe stdout/stderr
         env: {
           ...process.env,
           FLUTTERFLOW_PROJECT: flutterflowId,
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY
+          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+          CI: 'true', // Force headless CI mode
+          FORCE_COLOR: '0' // Disable ANSI color codes
         }
       });
 
       // Store process in registry for potential cancellation
       activeProcesses.set(projectId, childProcess);
 
-      let outputBuffer = '';
-      let errorBuffer = '';
+      // Use readline for line-buffered stdout streaming
+      const stdoutInterface = readline.createInterface({
+        input: childProcess.stdout,
+        crlfDelay: Infinity
+      });
 
-      // Stream stdout in real-time
-      childProcess.stdout.on('data', async (chunk) => {
-        const output = chunk.toString();
-        outputBuffer += output;
-
-        // Log each line as it comes in
-        const lines = output.split('\n');
-        for (const line of lines) {
-          if (line.trim()) {
-            await logToSupabase(projectId, line, 'info');
-          }
+      stdoutInterface.on('line', async (line) => {
+        if (line.trim()) {
+          await logToSupabase(projectId, line, 'info');
         }
       });
 
-      // Stream stderr in real-time
-      childProcess.stderr.on('data', async (chunk) => {
-        const error = chunk.toString();
-        errorBuffer += error;
+      // Use readline for line-buffered stderr streaming
+      const stderrInterface = readline.createInterface({
+        input: childProcess.stderr,
+        crlfDelay: Infinity
+      });
 
-        // Log each error line as it comes in
-        const lines = error.split('\n');
-        for (const line of lines) {
-          if (line.trim()) {
-            await logToSupabase(projectId, `[stderr] ${line}`, 'warning');
-          }
+      stderrInterface.on('line', async (line) => {
+        if (line.trim()) {
+          await logToSupabase(projectId, `[stderr] ${line}`, 'warning');
         }
       });
 
       // Handle process exit
       childProcess.on('close', async (code) => {
+        // Clean up readline interfaces
+        stdoutInterface.close();
+        stderrInterface.close();
+
         // Remove from active processes registry
         activeProcesses.delete(projectId);
 
@@ -521,6 +522,10 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
       // Handle process errors
       childProcess.on('error', async (error) => {
+        // Clean up readline interfaces
+        stdoutInterface.close();
+        stderrInterface.close();
+
         // Remove from active processes registry
         activeProcesses.delete(projectId);
 
