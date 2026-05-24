@@ -460,7 +460,9 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
 
     await new Promise(async (resolve, reject) => {
       // Build the full command as a single string for shell: true
-      const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions`;
+      // Use -p for print mode (non-interactive), --output-format=text for plain output
+      // --tools=default enables all built-in tools, --verbose for debug output
+      const claudeCommand = `claude -p "${claudePrompt}" --dangerously-skip-permissions --output-format=text --tools=default --verbose`;
 
       await logToSupabase(projectId, `Executing command: ${claudeCommand}`, 'info');
 
@@ -477,6 +479,9 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           CI: 'true', // Force headless CI mode
           FORCE_COLOR: '0', // Disable ANSI color codes
+          NO_COLOR: '1', // Another way to disable colors
+          TERM: 'dumb', // Prevent interactive terminal features
+          DEBIAN_FRONTEND: 'noninteractive', // Prevent apt prompts
           PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' // Ensure PATH is set
         }
       });
