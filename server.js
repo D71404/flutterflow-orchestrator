@@ -603,6 +603,31 @@ async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
           return;
         }
 
+        try {
+          await logToSupabase(projectId, 'Committing generated Flutter code to isolated branch...', 'info');
+
+          if (process.env.GITHUB_TOKEN) {
+            await execAsync('git remote set-url origin "$GIT_AUTHENTICATED_URL"', {
+              cwd: workspacePath,
+              env: { ...process.env, GIT_AUTHENTICATED_URL: cloneUrl },
+            });
+          }
+
+          await execAsync('git config user.email "orchestrator@flutterflow.local"', { cwd: workspacePath });
+          await execAsync('git config user.name "FlutterFlow Orchestrator"', { cwd: workspacePath });
+          await execAsync('git checkout -b flutter-native-build', { cwd: workspacePath });
+          await execAsync('git add lib/', { cwd: workspacePath });
+          await execAsync('git commit -m "feat: AI translation of Auth module to Flutter"', { cwd: workspacePath });
+          await execAsync('git push -f origin flutter-native-build', { cwd: workspacePath });
+
+          await logToSupabase(projectId, 'Generated Flutter code pushed to flutter-native-build branch', 'success');
+        } catch (gitError) {
+          const sanitizedMessage = sanitizeError(gitError.message);
+          await logToSupabase(projectId, `Failed to push generated code: ${sanitizedMessage}`, 'error');
+          finish(reject, new Error(sanitizedMessage));
+          return;
+        }
+
         await logToSupabase(projectId, 'Translation completed successfully!', 'success');
         finish(resolve);
       });
