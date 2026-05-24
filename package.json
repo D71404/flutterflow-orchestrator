@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/D71404/rsi-webhook-trader#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
     "@supabase/supabase-js": "^2.106.1",
     "express": "^5.2.1"
   }

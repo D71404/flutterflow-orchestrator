@@ -1,5 +1,6 @@
 import express from 'express';
 import { createClient } from '@supabase/supabase-js';
+import Anthropic from '@anthropic-ai/sdk';
 import { exec } from 'child_process';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -32,6 +33,17 @@ const supabase = createClient(supabaseUrl || '', supabaseServiceKey || '', {
   }
 });
 
+// Initialize Anthropic client
+const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+
+if (!anthropicApiKey) {
+  console.warn('Warning: ANTHROPIC_API_KEY not set. Chat features will not work.');
+}
+
+const anthropic = new Anthropic({
+  apiKey: anthropicApiKey || ''
+});
+
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({
@@ -48,6 +60,66 @@ app.get('/api/status', (req, res) => {
     supabase: supabaseUrl ? 'configured' : 'not configured',
     environment: process.env.NODE_ENV || 'development'
   });
+});
+
+// AI Co-Pilot chat endpoint with Smart Router
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { projectId, message } = req.body;
+
+    // Validate required parameters
+    if (!projectId || !message) {
+      return res.status(400).json({
+        error: 'Missing required parameters',
+        required: ['projectId', 'message']
+      });
+    }
+
+    // 4. Smart Router Logic - Classify the request
+    let selectedModel = 'claude-3-5-haiku-20241022'; // Default to simple
+
+    try {
+      const classificationResponse = await anthropic.messages.create({
+        model: 'claude-3-5-haiku-latest',
+        max_tokens: 10,
+        temperature: 0,
+        system: 'You are a request classifier. Classify the following request as either "SIMPLE" (color changes, text edits, padding) or "COMPLEX" (database logic, new pages, complex state). Return ONLY the word "SIMPLE" or "COMPLEX".',
+        messages: [
+          {
+            role: 'user',
+            content: message
+          }
+        ]
+      });
+
+      const classification = classificationResponse.content[0]?.text?.trim().toUpperCase();
+
+      if (classification === 'COMPLEX') {
+        selectedModel = 'claude-3-5-sonnet-20241022';
+      }
+
+      console.log(`Chat request classified as ${classification}, using model: ${selectedModel}`);
+    } catch (classificationError) {
+      console.error('Classification error, defaulting to SIMPLE:', classificationError);
+    }
+
+    // Return 200 OK immediately
+    res.status(200).json({
+      message: 'Chat processing started',
+      projectId,
+      model: selectedModel
+    });
+
+    // Execute in background
+    processChatInBackground(projectId, message, selectedModel);
+
+  } catch (error) {
+    console.error('Error in /api/chat:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
 });
 
 // Mobile app generation endpoint
@@ -96,6 +168,96 @@ app.post('/api/generate-mobile', async (req, res) => {
     });
   }
 });
+
+// Chat background processing function
+async function processChatInBackground(projectId, message, selectedModel) {
+  const workspacePath = `/tmp/workspaces/${projectId}`;
+
+  try {
+    console.log(`Starting chat processing for project ${projectId} with model ${selectedModel}`);
+
+    // Check if workspace exists
+    try {
+      await fs.access(workspacePath);
+    } catch {
+      console.error(`Workspace not found for project ${projectId}`);
+      await supabase
+        .from('build_logs')
+        .insert({
+          project_id: projectId,
+          log_type: 'error',
+          content: `Workspace not found. Please run /api/generate-mobile first to create the project workspace.`,
+          created_at: new Date().toISOString()
+        });
+      return;
+    }
+
+    // Build and execute shell script
+    const shellScript = `
+      cd "${workspacePath}"
+
+      # Run Claude Code CLI with the selected model
+      echo "Running Claude Code CLI with model: ${selectedModel}"
+      claude -p "${message}. Also, do not ask for confirmation." --model ${selectedModel} --yes
+    `;
+
+    // Execute the shell script
+    exec(shellScript, {
+      shell: '/bin/bash',
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+      timeout: 15 * 60 * 1000, // 15 minute timeout
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY
+      }
+    }, async (error, stdout, stderr) => {
+
+      // Handle execution results
+      if (error) {
+        console.error(`Chat execution failed for project ${projectId}:`, error);
+
+        // Insert error log
+        await supabase
+          .from('build_logs')
+          .insert({
+            project_id: projectId,
+            log_type: 'chat_error',
+            content: stderr || error.message,
+            created_at: new Date().toISOString()
+          });
+
+        console.log(`Chat request failed for project ${projectId}`);
+      } else {
+        console.log(`Chat execution succeeded for project ${projectId}`);
+
+        // Insert success log
+        await supabase
+          .from('build_logs')
+          .insert({
+            project_id: projectId,
+            log_type: 'chat_success',
+            content: stdout,
+            created_at: new Date().toISOString()
+          });
+
+        console.log(`Chat request completed for project ${projectId}`);
+      }
+    });
+
+  } catch (error) {
+    console.error(`Chat processing error for project ${projectId}:`, error);
+
+    // Insert error log
+    await supabase
+      .from('build_logs')
+      .insert({
+        project_id: projectId,
+        log_type: 'chat_error',
+        content: error.message,
+        created_at: new Date().toISOString()
+      });
+  }
+}
 
 // Background processing function
 async function processInBackground(projectId, lovableRepoUrl, flutterflowId) {
@@ -232,9 +394,11 @@ app.listen(PORT, () => {
   console.log('Environment:', process.env.NODE_ENV || 'development');
   console.log('Supabase URL:', supabaseUrl ? 'Configured' : 'Not configured');
   console.log('Supabase Service Key:', supabaseServiceKey ? 'Configured' : 'Not configured');
+  console.log('Anthropic API Key:', anthropicApiKey ? 'Configured' : 'Not configured');
   console.log('Required environment variables:');
   console.log('  - SUPABASE_URL');
   console.log('  - SUPABASE_SERVICE_KEY');
+  console.log('  - ANTHROPIC_API_KEY (for chat features)');
 });
 
 export default app;
